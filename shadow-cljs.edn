@@ -1,0 +1,11 @@
+;; shadow-cljs configuration
+{:deps   {:aliases [:dev :cljs :test]}
+ :builds {:node {:target     :node-library
+                 :output-to  "target/node.js"
+                 :output-dir "target/node"
+                 :exports    {:hello node/hello}}
+          :test {:target     :node-test
+                 :output-to  "target/test.js"
+                 :output-dir "target/test"
+                 :autorun    true}}
+ :nrepl  {:port 9000}}
