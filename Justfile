@@ -15,7 +15,8 @@ node:
 test focus=':unit' +opts="":
   @clear
   @echo "Running tests..."
-  @clojure -M:test -m kaocha.runner                \
+  @clojure -M:test:local-match                     \
+           -m kaocha.runner                        \
            --reporter kaocha.report/documentation  \
            --focus {{ focus }}                     \
            {{ opts }}

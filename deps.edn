@@ -1,20 +1,23 @@
 {:paths   ["src/main"]
  :deps    {org.clojure/clojure {:mvn/version "1.11.1"}}
- :aliases {:cljs     {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.60"}}}
+ :aliases {:cljs        {:extra-deps {org.clojure/clojurescript {:mvn/version "1.11.60"}}}
 
-           :test     {:extra-paths ["src/test"]
-                      :extra-deps  {org.slf4j/slf4j-nop    {:mvn/version "2.0.4"}
-                                    lambdaisland/kaocha    {:mvn/version "1.71.1119"}
-                                    io.github.jarppe/match {:git/tag "v0.0.1"
-                                                            :git/sha "80a0d9a"}}}
+           :test        {:extra-paths ["src/test"]
+                         :extra-deps  {org.slf4j/slf4j-nop    {:mvn/version "2.0.4"}
+                                       lambdaisland/kaocha    {:mvn/version "1.71.1119"}
+                                       io.github.jarppe/match {:git/tag "v0.0.1"
+                                                               :git/sha "80a0d9a"}}}
 
-           :examples {:extran-paths ["src/examples"]}
+           :local-match {:override-deps {io.github.jarppe/match {:local/root "../test-match"}}}
 
-           :dev      {:extra-paths ["src/dev"]
-                      :extra-deps  {cider/cider-nrepl    {:mvn/version "0.28.7"}
-                                    thheller/shadow-cljs {:mvn/version "2.20.12"}}}
+           :examples    {:extran-paths ["src/examples"]}
 
-           :outdated {:extra-deps {olical/depot {:mvn/version "RELEASE"}}
-                      :main-opts  ["-m" "depot.outdated.main" "-a" "outdated"]}
-           :uberjar  {:extra-deps {seancorfield/depstar {:mvn/version "RELEASE"}}
-                      :main-opts  ["-m" "hf.depstar.uberjar" "target/app.jar"]}}}
+           :dev         {:extra-paths ["src/dev"]
+                         :extra-deps  {cider/cider-nrepl    {:mvn/version "0.28.7"}
+                                       thheller/shadow-cljs {:mvn/version "2.20.12"}}}
+
+
+           :outdated    {:extra-deps {olical/depot {:mvn/version "RELEASE"}}
+                         :main-opts  ["-m" "depot.outdated.main" "-a" "outdated"]}
+           :uberjar     {:extra-deps {seancorfield/depstar {:mvn/version "RELEASE"}}
+                         :main-opts  ["-m" "hf.depstar.uberjar" "target/app.jar"]}}}

@@ -1,5 +1,5 @@
 ;; shadow-cljs configuration
-{:deps   {:aliases [:dev :cljs :test]}
+{:deps   {:aliases [:dev :cljs :test :local-match]}
  :builds {:node {:target     :node-library
                  :output-to  "target/node.js"
                  :output-dir "target/node"
