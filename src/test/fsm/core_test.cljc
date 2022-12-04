@@ -1,193 +1,262 @@
 (ns fsm.core-test
-  (:require [clojure.test :as test :refer [deftest is testing]]
+  (:require [clojure.test :as test :refer [deftest is are testing]]
             [match.core :refer [matches?]]
             [fsm.core :as fsm]))
 
 (comment
 
   ; FSM shape:
-  {:id             'optional-fsm-id
-   :state          'current-state
-   :states         {:state-id {:guards ['guard...]
-                               :on     ['signal-matchder {:to     'next-state
-                                                          :guards ['guard...]
-                                                          :fx     ['fx...]}
-                                        ...]
-                               :fx     ['fx...]
-                               :enter  ['enter-fx...]
-                               :stay   ['stay-fx...]
-                               :leave  ['leave-fx...]}}
-   :super          {:guards ['guard...]
-                    :fx     ['fx...]
-                    :on     ...}
-   :default        {:guards ['guard...]
-                    :fx     ['fx...]
-                    :on     ...}
-   :apply-fx       'fn-to-handle-handler-calls
-   :signal-matcher 'fn-to-handle-signal-matching}
-
-  ; The default 'fn-to-handle-handler-calls accepts handlers with this shape:
-  ;    [handler-fn arg1 arg2 ...]
-  ; and ivokes:
-  ;    (apply handler-fn fsm arg1 arg2...)
-  )
+  {:id      'optional-fsm-id
+   :state   'current-state
+   :states  {:state-id {:guards ['guard...]
+                        :on     ['signal-matchder {:to        'state
+                                                   '|| ['state 'state...]
+                                                   :guards    ['guard...]
+                                                   :fx        ['fx...]}
+                                 ...]
+                        :enter  {:guards ['guard...]
+                                 :fx     ['fx...]}
+                        :stay   {:guards ['guard...]
+                                 :fx     ['fx...]}
+                        :leave  {:guards ['guard...]
+                                 :fx     ['fx...]}}}
+   :super   {:guards ['guard...]
+             :fx     ['fx...]
+             :on     ...}
+   :default {:guards ['guard...]
+             :fx     ['fx...]
+             :on     ...}})
 
 
-(deftest default-apply-fx-test
-  (let [fsm {}]
-    (is (matches? fsm
-                  (fsm/default-apply-fx fsm nil)))
-    (is (matches? {:data "hello"}
-                  (fsm/default-apply-fx
-                   fsm
-                   [#(assoc % :data "hello")])))
-    (is (matches? {:data "hello"}
-                  (fsm/default-apply-fx
-                   fsm
-                   [assoc :data "hello"])))))
-
-
-
-(deftest default-signal-matcher-test
-  (is (fsm/default-signal-matcher {:signal "hello"}
-                                  "hello"))
-  (is (not (fsm/default-signal-matcher {:signal "hello"}
-                                       "world")))
-  (is (fsm/default-signal-matcher {:signal "hello"}
-                                  #{"hello"}))
-  (is (not (fsm/default-signal-matcher {:signal "hello"}
-                                       #{"world"})))
-  (is (fsm/default-signal-matcher {:signal "hello"}
-                                  (partial = "hello")))
-  (is (not (fsm/default-signal-matcher {:signal "hello"}
-                                       (partial = "world")))))
+(deftest signal-matches?-test
+  (are [target result]
+       (= result
+          (fsm/signal-matches? "hello"
+                               target))
+    "hello" true
+    "world" false
+    #{"hello"} true
+    #{"world"} false
+    (partial = "hello") true
+    (partial = "world") false))
 
 
 (deftest transitions-for-signal-test
-  (is (matches? [{:id "a"}]
-                (-> {:state  :init
-                     :states {:init {:on ["a" {:id "a"}
-                                          "b" {:id "b"}]}}
-                     :signal "a"}
-                    (fsm/transitions-for-signal))))
-  (is (matches? [{:id "a1"}
-                 {:id "a2"}]
-                (-> {:state  :init
-                     :states {:init {:on ["a" {:id "a1"}
-                                          "a" {:id "a2"}]}}
-                     :signal "a"}
-                    (fsm/transitions-for-signal))))
-  (is (matches? [{:id :super-a}
-                 {:id :a}
-                 {:id :default-a}]
-                (-> {:state   :init
-                     :states  {:init {:on ["a" {:id :a}
-                                           "b" {:id :b}]}}
-                     :super   {:on ["a" {:id :super-a}
-                                    "b" {:id :super-b}]}
-                     :default {:on ["a" {:id :default-a}
-                                    "b" {:id :default-b}]}
-                     :signal  "a"}
-                    (fsm/transitions-for-signal)))))
+  (let [fsm {:state  :init
+             :states {:init {:on ["a" {:id "a"}
+                                  "b" {:id "b"}]}}}]
+    (is (matches? [{:id "a"}]
+                  (fsm/get-transitions-for-signal fsm "a"))))
+  (let [fsm {:state  :init
+             :states {:init {:on ["a" {:id "a1"}
+                                  "a" {:id "a2"}]}}}]
+    (is (matches? [{:id "a1"}
+                   {:id "a2"}]
+                  (fsm/get-transitions-for-signal fsm "a"))))
+  (let [fsm {:state   :init
+             :states  {:init {:on ["a" {:id :a}
+                                   "b" {:id :b}]}}
+             :super   {:on ["a" {:id :super-a}
+                            "b" {:id :super-b}]}
+             :default {:on ["a" {:id :default-a}
+                            "b" {:id :default-b}]}}]
+    (is (matches? [{:id :super-a}
+                   {:id :a}
+                   {:id :default-a}]
+                  (fsm/get-transitions-for-signal fsm "a")))))
 
 
 (deftest guards-for-transition-test
   (let [fsm        {:state   :init
-                    :super   {:guards [:super-1
-                                       :super-2]}
-                    :states  {:init {:on     ["a" {:guards [:a-1
-                                                            :a-2]}]
-                                     :guards [:init-1
-                                              :init-2]}}
-                    :default {:guards [:default-1
-                                       :default-2]}}
-        transition (-> (assoc fsm :signal "a")
-                       (fsm/transitions-for-signal)
-                       (first))]
-    (is (matches? {:guards [:a-1 :a-2]}
-                  transition))
-    (is (matches? [:super-1
-                   :super-2
-                   :init-1
-                   :init-2
-                   :a-1
-                   :a-2
-                   :default-1
-                   :default-2]
-                  (fsm/guards-for-transition fsm transition)))))
+                    :super   {:guards [:super]}
+                    :states  {:init {:on    ["a" {:guards [:init-a]}
+                                             "b" {:to     :next
+                                                  :guards [:init-b]}]
+                                     :enter {:guards [:init-enter]}
+                                     :stay  {:guards [:init-stay]}
+                                     :leave {:guards [:init-leave]}}
+                              :next {:enter {:guards [:next-enter]}
+                                     :stay  {:guards [:next-stay]}
+                                     :leave {:guards [:next-leave]}}}
+                    :default {:guards [:default]}}]
+    (testing "stay in state :init"
+      (is (matches? [:super
+                     :init-stay
+                     :init-a
+                     :default]
+                    (->> (fsm/get-transitions-for-signal fsm "a")
+                         (first)
+                         (fsm/guards-for-transition fsm)))))
+    (testing "transition to state :next"
+      (is (matches? [:super
+                     :init-leave
+                     :init-b
+                     :next-enter
+                     :default]
+                    (->> (fsm/get-transitions-for-signal fsm "b")
+                         (first)
+                         (fsm/guards-for-transition fsm)))))))
+
+;; fx-for-transition-test has same implementation as guards-for-transition
+
+(deftest transitions-test
+  (let [fsm   {:state  :init
+               :states {:init {:on ["a" {:to     :foo
+                                         :guards [:guard-1]
+                                         :fx     [:fx-1]}
+                                    "a" {:to     :bar
+                                         :guards [:guard-2]
+                                         :fx     [:fx-2]}]}}}]
+    (is (matches? [{:transition {:to :foo}
+                    :guards     [:guard-1]
+                    :fx         [:fx-1]}
+                   {:transition {:to :bar}
+                    :guards     [:guard-2]
+                    :fx         [:fx-2]}]
+                  (fsm/get-transitions fsm "a"))))
+  (let [fsm   {:state   :init
+               :states  {:init {:on    ["a" {:to     :foo
+                                             :guards [:guard-1]
+                                             :fx     [:fx-1]}
+                                        "a" {:to     :bar
+                                             :guards [:guard-2]
+                                             :fx     [:fx-2]}]
+                                :leave {:guards [:leave-a]
+                                        :fx     [:leave-a]}}}
+               :super   {:guards [:guard-super]
+                         :fx     [:fx-super]}
+               :default {:guards [:guard-default]
+                         :fx     [:fx-default]}}]
+    (is (matches? [{:transition {:to :foo}
+                    :guards     [:guard-super
+                                 :leave-a
+                                 :guard-1
+                                 :guard-default]
+                    :fx         [:fx-super
+                                 :leave-a
+                                 :fx-1
+                                 :fx-default]}
+                   {:transition {:to :bar}
+                    :guards     [:guard-super
+                                 :leave-a
+                                 :guard-2
+                                 :guard-default]
+                    :fx         [:fx-super
+                                 :leave-a
+                                 :fx-2
+                                 :fx-default]}]
+                  (fsm/get-transitions fsm "a")))))
 
 
-(def PASS (constantly true))
-(def REJECT (constantly false))
-
-
-(deftest filter-transitions-by-guards-test
-  (let [fsm         {:state  :init
-                     :states {:init {:on ["a" {:id :a}]}}}
-        transitions (-> (assoc fsm :signal "a")
-                        (fsm/transitions-for-signal))]
-    (is (matches? [{:id :a}]
-                  (fsm/filter-transitions-by-guards fsm
-                                                    transitions))))
-  (let [fsm         {:state  :init
-                     :super  {:guards [REJECT]}
-                     :states {:init {:on ["a" {:id :a}]}}}
-        transitions (-> (assoc fsm :signal "a")
-                        (fsm/transitions-for-signal))]
+(deftest transition-test
+  (let [fsm   {:state  :init
+               :states {:init {:on ["a" {:to     :foo
+                                         :guards [:guard-1]
+                                         :fx     [:fx-1]}
+                                    "a" {:to     :bar
+                                         :guards [:guard-2]
+                                         :fx     [:fx-2]}]}}}]
+    (is (matches? {:transition {:to :foo}}
+                  (fsm/get-transition (fn [fsm' guard]
+                                        (is (-> fsm' :signal (= "a")))
+                                        (= guard :guard-1))
+                                      fsm
+                                      "a")))
+    (is (matches? {:transition {:to :bar}}
+                  (fsm/get-transition (fn [fsm' guard]
+                                        (is (-> fsm' :signal (= "a")))
+                                        (= guard :guard-2))
+                                      fsm
+                                      "a")))
     (is (matches? nil
-                  (fsm/filter-transitions-by-guards fsm
-                                                    transitions))))
-  (let [fsm         {:state  :init
-                     :super  {:guards [PASS]}
-                     :states {:init {:guards [PASS]
-                                     :on     ["a" {:id     :a
-                                                   :guards [PASS]}]}}}
-        transitions (-> (assoc fsm :signal "a")
-                        (fsm/transitions-for-signal))]
-    (is (matches? [{:id :a}]
-                  (fsm/filter-transitions-by-guards fsm
-                                                    transitions)))))
-
-(deftest apply-transition-test
-  (let [fsm        {:state   :init
-                    :super   {:fx [[update :fx conj :super]]}
-                    :states  {:init {:on    ["a" {:fx [[update :fx conj :a]]}
-                                             "b" {:to :next
-                                                  :fx [[update :fx conj :b]]}]
-                                     :stay  [[update :fx conj :init-stay]]
-                                     :leave [[update :fx conj :init-leave]]}
-                              :next {:enter [[update :fx conj :next-enter]]}}
-                    :default {:fx [[update :fx conj :default]]}}]
-    (is (matches? {:fx [:init-stay
-                        :super
-                        :a
-                        :default]}
-                  (fsm/apply-signal fsm "a")))
-    (is (matches? {:fx [:init-leave
-                        :super
-                        :b
-                        :default
-                        :next-enter]}
-                  (fsm/apply-signal fsm "b")))))
+                  (fsm/get-transition (constantly false)
+                                      fsm
+                                      "a"))))
+  (let [fsm   {:state   :init
+               :states  {:init {:on    ["a" {:to     :foo
+                                             :guards [:guard-1]
+                                             :fx     [:fx-1]}
+                                        "a" {:to     :bar
+                                             :guards [:guard-2]
+                                             :fx     [:fx-2]}]
+                                :leave {:guards [:leave-a]
+                                        :fx     [:leave-a]}}}
+               :super   {:guards [:guard-super]
+                         :fx     [:fx-super]}
+               :default {:guards [:guard-default]
+                         :fx     [:fx-default]}}]
+    (is (matches? {:transition {:to :foo}}
+                  (fsm/get-transition (fn [_fsm guard]
+                                        (not (= guard :guard-2)))
+                                      fsm
+                                      "a")))
+    (is (matches? {:transition {:to :bar}}
+                  (fsm/get-transition (fn [_fsm guard]
+                                        (not (= guard :guard-1)))
+                                      fsm
+                                      "a")))
+    (is (matches? nil
+                  (fsm/get-transition (constantly false)
+                                      fsm
+                                      "a")))))
 
 
-(deftest dry-run-test
-  (let [guard (fn [_fsm pass?] pass?)
-        fsm   {:state  :init
-               :states {:init {:on ["a" {:to     :next
-                                         :guards [[guard true]]
-                                         :fx     [[update :fx conj :a-1]]}
-                                    "a" {:to     :fofo
-                                         :guards [[guard false]]
-                                         :fx     [[update :fx conj :a-1]]}]}
-                        :next {}
-                        :fofo {}}}]
-    (is (matches? {:state       :init
-                   :signal      "a"
-                   :transitions [{:to       :next
-                                  :allowed? true
-                                  :fx       [:a-1]}
-                                 {:to       :fofo
-                                  :allowed? false
-                                  :fx       nil}]}
-                  (fsm/dry-run fsm "a")))))
+(deftest apply-signal-test
+  (let [fsm        {:state     :init
+                    :super     {:fx [[update :fx conj :super]]}
+                    :states    {:init {:on    ["a" {:fx [[update :fx conj :a]]}
+                                               "b" {:to :next
+                                                    :fx [[update :fx conj :b]]}]
+                                       :stay  {:fx [[update :fx conj :init-stay]]}
+                                       :leave {:fx [[update :fx conj :init-leave]]}}
+                                :next {:enter {:fx [[update :fx conj :next-enter]]}}}
+                    :default   {:fx [[update :fx conj :default]]}
+                    :handle-fx (fn [fsm [f & args]]
+                                 (apply f fsm args))
+                    :fx        []}]
+    (testing "stay in state :init"
+      (is (matches? {:fx [:super
+                          :init-stay
+                          :a
+                          :default]}
+                    (fsm/apply-signal fsm "a"))))
+    (testing "transition to state :next"
+      (is (matches? {:fx [:super
+                          :init-leave
+                          :b
+                          :next-enter
+                          :default]}
+                    (fsm/apply-signal fsm "b"))))))
+
+(deftest apply-signal-with-state-stack-test
+  (let [fsm        {:state  :a
+                    :states {:a {:on ["x" {:to [:b :c]}]}
+                             :b {:on ["x" {:to ::fsm/pop}]}
+                             :c {}}}]
+    (is (matches? {:state [:b :c]}
+                  (reduce fsm/apply-signal fsm ["x"])))
+    (is (matches? {:state [:c]}
+                  (reduce fsm/apply-signal fsm ["x" "x"]))))
+
+  (let [fsm        {:state  :a
+                    :states {:a {:on ["x" {:to [:b :c]}]}
+                             :b {:on ["x" {:to :d}]}
+                             :c {}
+                             :d {:on ["x" {:to ::fsm/pop}]}}}]
+    (is (matches? {:state [:b :c]}
+                  (reduce fsm/apply-signal fsm ["x"])))
+    (is (matches? {:state [:d :c]}
+                  (reduce fsm/apply-signal fsm ["x" "x"])))
+    (is (matches? {:state [:c]}
+                  (reduce fsm/apply-signal fsm ["x" "x" "x"]))))
+
+  (let [fsm        {:state  :a
+                    :states {:a {:on ["x" {:to [:b :c]}]}
+                             :b {:on ["x" {:to ::fsm/pop}]}
+                             :c {:on ["x" {:to ::fsm/pop}]}}}]
+    (is (matches? {:state [:b :c]}
+                  (reduce fsm/apply-signal fsm ["x"])))
+    (is (matches? {:state [:c]}
+                  (reduce fsm/apply-signal fsm ["x" "x"])))
+    (is (matches? (ex-info "fsm: error: transition using pop state, but stack is empty" {})
+                  (reduce fsm/apply-signal fsm ["x" "x" "x"])))))

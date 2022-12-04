@@ -6,261 +6,164 @@
 ;; cljs does not work with `(resolve handler)`.
 
 
-(defn default-apply-fx
-  "Default handler to execute fx handler"
-  [fsm handler]
+(def pop-state ::pop)
+
+
+(defn- coerce-seq [v]
   (cond
-    (nil? handler)
-    fsm
-
-    (or (fn? handler)
-        (var? handler))
-    (handler fsm)
-
-    (and (vector? handler)
-         (or (fn? (first handler))
-             (var? (first handler))))
-    (apply (first handler) fsm (rest handler))
-
-    :else
-    (throw (ex-info (sprintf "fsm: error: invalid hanlder")
-                    {:fsm     fsm
-                     :handler handler}))))
+    (nil? v) nil
+    (seq? v) v
+    (sequential? v) (seq v)
+    :else (cons v nil)))
 
 
-(defn default-signal-matcher
+(defn signal-matches?
   "Default function used to match signals"
-  [fsm matcher]
-  (let [signal (:signal fsm)]
-    (if (ifn? matcher)
-      (matcher signal)
-      (= matcher signal))))
+  [signal matcher]
+  (if (or (= signal matcher)
+          (and (ifn? matcher)
+               (matcher signal)))
+    true
+    false))
 
 
-(defn transitions-for-signal
+(defn get-transitions-for-signal
   "Return all possible transitions from current state with given signal"
-  [fsm]
-  (let [state          (-> fsm :state)
-        signal-matcher (partial (-> fsm :signal-matcher (or default-signal-matcher)) fsm)]
+  [fsm signal]
+  (let [current-state (-> fsm :state (coerce-seq) (first))]
     (->> (concat (-> fsm :super :on)
-                 (-> fsm :states (get state) :on)
+                 (-> fsm :states (get current-state) :on)
                  (-> fsm :default :on))
          (partition 2)
          (keep (fn [[matcher transition]]
-                 (when (signal-matcher matcher)
+                 (when (signal-matches? signal matcher)
                    transition))))))
+
+
+(defn- transition-elements [fsm transition element-key]
+  (let [current-state (-> fsm :state (coerce-seq) (first))
+        next-state    (-> transition :to (coerce-seq) (first) (or current-state))
+        move?         (not= current-state next-state)]
+    (concat (-> fsm :super element-key)
+            (when-not move?
+              (-> fsm :states (get current-state) :stay element-key))
+            (when move?
+              (-> fsm :states (get current-state) :leave element-key))
+            (-> transition element-key)
+            (when move?
+              (-> fsm :states (get next-state) :enter element-key))
+            (-> fsm :default element-key))))
 
 
 (defn guards-for-transition
   "Return all guards for given transition"
   [fsm transition]
-  (let [state (-> fsm :state)]
-    (concat (-> fsm :super :guards)
-            (-> fsm :states (get state) :guards)
-            (-> transition :guards)
-            (-> fsm :default :guards))))
+  (transition-elements fsm transition :guards))
 
 
 (defn fx-for-transition
-  "Return all fx handlers for given transition"
+  "Return all guards for given transition"
   [fsm transition]
-  (let [state  (or (-> transition :to)
-                   (-> fsm :state))]
-    (concat (-> fsm :super :fx)
-            (-> fsm :states (get state) :fx)
-            (-> transition :fx)
-            (-> fsm :default :fx))))
+  (transition-elements fsm transition :fx))
 
 
-(defn filter-transitions-by-guards
-  "Filters transitions based of guards"
-  [fsm transitions]
-  (let [allows? (partial (-> fsm :apply-fx (or default-apply-fx)) fsm)]
-    (->> transitions
-         (filter (fn [transition]
-                   (->> (guards-for-transition fsm transition)
-                        (every? allows?))))
-         (seq))))
+(defn get-transitions 
+  "Returns a seq of possible transitions with provided signal. Each 
+   element in the seq has following elements:
+     `:transition` The transition from the fsm that is possible
+     `:guards`     A seq of guards for this transition
+     `:fx`         A seq of effects fot this transition
+   The transitions are returned in following order:
+     * possible transitions from super state in the order
+       they are declared in fsm
+     * possible transitions from current state in the
+       order they are declared in fsm
+     * possible transitions from default state in the
+       order they are declared in fsm"
+  [fsm signal]
+  (->> (get-transitions-for-signal fsm signal)
+       (map (fn [transition]
+              {:transition transition
+               :guards     (guards-for-transition fsm transition)
+               :fx         (fx-for-transition fsm transition)}))))
 
 
-(defn apply-transition
-  "Perform state transition using given transition. Apply `:stay` or
-   `enter` and `leave` handers, and transition fx handlers."
-  [fsm transition]
-  (let [prev-state     (-> fsm :state)
-        next-state     (-> transition :to (or prev-state))
-        _              (when-not (-> fsm :states (contains? next-state))
-                         (throw (ex-info (sprintf "fsm: error: transitioning to unknown state: %s" next-state)
-                                         {:fsm        fsm
-                                          :signal     (-> fsm :signal)
-                                          :state      prev-state
-                                          :next-state next-state})))
-        move?          (not= next-state prev-state)
-        stay           (when-not move?
-                         (-> fsm :states (get prev-state) :stay))
-        leave          (when move?
-                         (-> fsm :states (get prev-state) :leave))
-        enter          (when move?
-                         (-> fsm :states (get next-state) :enter))
-        fxs            (fx-for-transition fsm transition)
-        apply-handler  (-> fsm :apply-fx (or default-apply-fx))
-        apply-handlers (partial reduce apply-handler)]
-    (-> (assoc fsm
-               :fx []
-               :prev-state prev-state
-               :next-state next-state)
-        (apply-handlers leave)
-        (apply-handlers stay)
-        (apply-handlers fxs)
-        (assoc :state next-state)
-        (apply-handlers enter)
-        (dissoc :prev-state :next-state))))
+;;
+;; Above pure stateless stuff, below more and more non-pureness starts to 
+;; show
+;;
 
 
-(defn get-transition
-  "Get first available transition for current signal, or `nil` if
-   no transition is available for signal"
-  [fsm]
-  (let [transitions (transitions-for-signal fsm)]
-    (-> (filter-transitions-by-guards fsm transitions)
-        (first))))
+(defn get-transition 
+  "Find first transition for given signal that is permitted by all
+   applicable guards, or `nil` if no transition is available for given
+   signal. The first argument `allow?` must be a fn with two arguments, 
+   first is the fsm and the second is the guard data from the fsm. The 
+   signal is available in the fsm at `:signal`. The `guard-allow?` must 
+   return truthy if the guard data allows transition."
+  [allow? fsm signal]
+  (let [allow? (partial allow? (assoc fsm :signal signal))]
+    (->> (get-transitions fsm signal)
+         (some (fn [transition]
+                 (when (every? allow? (-> transition :guards))
+                   transition))))))
+
+
+(defn get-transition!
+  "Same as `fsm.core/get-transition`, but throws an exception if transition is
+   not found."
+  [allow? fsm signal]
+  (or (get-transition allow? fsm signal)
+      (throw (ex-info (sprintf "fsm: error: transitionin not found for signal: %s" (pr-str signal))
+                      {:fsm        fsm
+                       :signal     signal}))))
+
+
+(defn- pop-state! [states]
+  (or (next states)
+      (throw (ex-info "fsm: error: transition using pop state, but stack is empty" {}))))
 
 
 (defn apply-signal
-  "Apply signal `signal` to given `fsm` and return updated `fsm`, or
-   nil if no transition was found for given signal"
-  [fsm signal]
-  (let [fsm        (assoc fsm :signal signal)
-        transition (get-transition fsm)]
-    (when transition
-      (-> (apply-transition fsm transition)
-          (dissoc :signal)))))
+  "Apply given signal to fsm, executes fx effects and returns possibly updated fsm.
+   In addition to stateless FSM described above, the given `fsm` must contain:
+     `:allow?`     A function to check guards. Must be a fn accepting two arguments, 
+                   first is the fsm, second the guard data from the fsm. The function 
+                   must return truthy if the guard data allows transition.
+     `:handle-fx`  A function to execute effects. Must be a fn accepting two arguments,
+                   first is the fsm and the second is the fx data from the fsm. The 
+                   function must return possibly updated fsm."
+  [fsm signal] 
+  (let [transition-info (get-transition! (-> fsm :allow?) fsm signal) 
+        prev-states     (-> fsm :state (coerce-seq)) 
+        next-states     (let [to (-> transition-info :transition :to (coerce-seq))]
+                          (cond
+                            (nil? to) prev-states
+                            (= (first to) ::pop) (concat (pop-state! prev-states)
+                                                         (next to))
+                            :else (concat to (next prev-states)))) 
+        prev-state      (first prev-states) 
+        next-state      (first next-states) 
+        _               (when-not (contains? (-> fsm :states) next-state)
+                          (throw (ex-info (sprintf "fsm: error: transitioning to unknown state: %s" next-state)
+                                          {:fsm        fsm
+                                           :signal     signal
+                                           :state      prev-state
+                                           :next-state next-state})))
+        handle-fx       (-> fsm :handle-fx)
+        fxs             (-> transition-info :fx)] 
+    (-> (reduce handle-fx
+                (assoc fsm
+                       :state next-states
+                       :signal signal 
+                       :prev-state prev-state
+                       :next-state next-state)
+                fxs)
+        (assoc :state next-states)
+        (dissoc :signal :prev-state :next-state))))
 
 
-(defn apply-signal!
-  "Apply signal `signal` to given `fsm` and return updated `fsm`. Throws
-   an exception if no transition was found for given signal"
-  [fsm signal]
-  (let [fsm        (assoc fsm :signal signal)
-        transition (get-transition fsm)]
-    (when-not transition
-      (throw (ex-info (sprintf "fsm: error: no transition for signal %s" signal)
-                      {:fsm    fsm
-                       :signal signal})))
-    (-> (apply-transition fsm transition)
-        (dissoc :signal))))
-
-
-(defn dry-run [fsm signal]
-  (let [fsm (assoc fsm :signal signal)]
-    {:state       (-> fsm :state)
-     :signal      signal
-     :transitions (->> (transitions-for-signal fsm)
-                       (map (fn [transition]
-                              (let [apply-handler (-> fsm :apply-fx (or default-apply-fx))
-                                    guards        (->> (guards-for-transition fsm transition)
-                                                       (map (fn [guard]
-                                                              [guard (boolean (apply-handler fsm guard))])))
-                                    allowed?      (->> guards
-                                                       (map second)
-                                                       (every? true?))]
-                                {:to       (-> transition :to)
-                                 :allowed? allowed?
-                                 :guards   guards
-                                 :fx       (when allowed?
-                                             (-> (apply-transition fsm transition)
-                                                 :fx))}))))}))
-
-
-(comment
-
-  (defn pass [_fsm & _args] true)
-  (defn reject [_fsm & _args] false)
-
-  (let [fsm {:state  :init
-             :states {:init {:on ["a" {:guards [[#'pass :a]]}
-                                  "b" {:to     :next
-                                       :guards [[#'pass :b]]}
-                                  "b" {:to     :fofo
-                                       :guards [[#'reject :b]]}]}}}]
-    (-> (analyze fsm "b")
-        :transitions))
-
-  {:state       :init
-   :signal      "b"
-   :transitions ({:to       :next
-                  :allowed? true
-                  :guards   ([[#'fsm.core/pass :super] true] [[#'fsm.core/pass :b] true])
-                  :fx       [:init-leave :next-enter :super :b :default]}
-                 {:to       :fofo
-                  :allowed? false
-                  :guards   ([[#'fsm.core/pass :super] true] [[#'fsm.core/reject :b] false])
-                  :fx       nil})}
-
-
-  {:state       :init
-   :signal      "b"
-   :transitions ({:to       :next
-                  :allowed? true
-                  :guards   ([[#'fsm.core/pass :super] true] [[#'fsm.core/pass :b] true])
-                  :fx       [:init-leave :next-enter :super :b :default]})}
-
-
-  {:state       :init
-   :signal      "a"
-   :transitions ({:to       nil
-                  :allowed? true
-                  :guards   ([[#'fsm.core/pass :super] true]
-                             [[#'fsm.core/pass :a] true])
-                  :fx       [:init-stay :super :a :default]})}
-
-
-  {:state       :init
-   :signal      "a"
-   :transitions ({:to       nil
-                  :allowed? false
-                  :guards   ([[#'fsm.core/pass :super] false] [[#'fsm.core/pass :a] false])
-                  :fx       nil})}
-
-
-  {:state       ...
-   :signal      ...
-   :transitions [{:to      ...
-                  :ok      false
-                  :guards  [['guard-1 true]
-                            ['guard-2 false]]
-                  :handler ...
-                  :fx      ...}
-                 ...]}
-
-  (def data {:fsm    {:state  :init
-                      :states {:init {:on [#{"a"} {:to :s-1}
-                                           #{"a"} {:to :s-2}
-                                           #{"b"} {:to :s-3}]}}}
-             :signal "a"})
-
-
-  (require 'clojure.pprint)
-
-  (defn test-analyze [_ _ _ f]
-    (let [{:keys [fsm signal]} (deref #'data)]
-      (println "\n\nanalyze:\n"
-               "signal: " signal "\n"
-               (-> (f fsm signal)
-                   :transitions
-                   clojure.pprint/pprint
-                   (with-out-str)))))
-
-
-  (do (add-watch #'data :foo #'test-analyze)
-      (add-watch #'analyze :foo #'test-analyze))
-
-  (do (remove-watch #'data :foo)
-      (remove-watch #'analyze :foo))
-
-
-
-  (remove-watch #'analyze :foo)
-
-  ;
-  )
+(defn machine [fsm]
+  (let [fsm (atom fsm)]
+    (fn [signal]
+      (swap! fsm apply-signal signal))))
