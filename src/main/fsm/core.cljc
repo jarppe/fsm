@@ -2,11 +2,46 @@
   (:require [fsm.impl.util :refer [sprintf]]))
 
 
-;; TODO: It would be great if we could use a symbols as handlers. Unfortunately
-;; cljs does not work with `(resolve handler)`.
-
-
 (def pop-state ::pop)
+(def pushback ::pushback)
+
+
+(defn- default-allow? [fsm guard]
+  (cond
+    (vector? guard) (apply (first guard) fsm (rest guard))
+    (fn? guard) (guard fsm)
+    :else (throw (ex-info (sprintf "fsm: default-allow?: don't know how to handle guard: %s" (pr-str guard))
+                          {:fsm   fsm
+                           :guard guard}))))
+
+
+(defn- default-handle-fx [fsm fx]
+  (cond
+    (= fx ::pushback)
+    (update fsm ::pushback conj (-> fsm :signal))
+
+    (and (vector? fx)
+         (= (first fx) ::pushback))
+    (update fsm ::pushback concat (map (fn [v]
+                                         (if (= v ::signal)
+                                           (:signal fsm)
+                                           v))
+                                       (rest fx)))
+
+    (vector? fx)
+    (apply (first fx) fsm (map (fn [v]
+                                 (if (= v ::signal)
+                                   (:signal fsm)
+                                   v))
+                               (rest fx)))
+
+    (fn? fx)
+    (fx fsm)
+
+    :else
+    (throw (ex-info (sprintf "fsm: default-handle-fx: don't know how to handle fx: %s" (pr-str fx))
+                    {:fsm fsm
+                     :fx  fx}))))
 
 
 (defn- coerce-seq [v]
@@ -97,26 +132,35 @@
 (defn get-transition 
   "Find first transition for given signal that is permitted by all
    applicable guards, or `nil` if no transition is available for given
-   signal. The first argument `allow?` must be a fn with two arguments, 
-   first is the fsm and the second is the guard data from the fsm. The 
-   signal is available in the fsm at `:signal`. The `guard-allow?` must 
-   return truthy if the guard data allows transition."
-  [allow? fsm signal]
-  (let [allow? (partial allow? (assoc fsm :signal signal))]
-    (->> (get-transitions fsm signal)
-         (some (fn [transition]
-                 (when (every? allow? (-> transition :guards))
-                   transition))))))
+   signal. 
+   
+   Two arguments version checks quards using the default guard function.
+   It accepts guards that are wither a vector, or a function. See the
+   documentation TODO for more information.
+   
+   Three arg version allows specifying the `allow?` function. 
+   It must accept two arguments, first is the fsm and the second is the 
+   guard data from the fsm. The signal is available in the fsm at 
+   `:signal`. The `guard-allow?` must return truthy if the guard data 
+   allows transition."
+  ([fsm signal] (get-transition default-allow? fsm signal))
+  ([allow? fsm signal]
+   (let [allow? (partial allow? (assoc fsm :signal signal))]
+     (->> (get-transitions fsm signal)
+          (some (fn [transition]
+                  (when (every? allow? (-> transition :guards))
+                    transition)))))))
 
 
 (defn get-transition!
   "Same as `fsm.core/get-transition`, but throws an exception if transition is
    not found."
-  [allow? fsm signal]
-  (or (get-transition allow? fsm signal)
-      (throw (ex-info (sprintf "fsm: error: transitionin not found for signal: %s" (pr-str signal))
-                      {:fsm        fsm
-                       :signal     signal}))))
+  ([fsm signal] (get-transition! default-allow? fsm signal))
+  ([allow? fsm signal]
+   (or (get-transition allow? fsm signal)
+       (throw (ex-info (sprintf "fsm: error: transitionin not found for signal: %s" (pr-str signal))
+                       {:fsm    fsm
+                        :signal signal})))))
 
 
 (defn- pop-state! [states]
@@ -124,43 +168,44 @@
       (throw (ex-info "fsm: error: transition using pop state, but stack is empty" {}))))
 
 
+(def ^:private default-opts {:allow?    default-allow?
+                             :handle-fx default-handle-fx})
+
 (defn apply-signal
-  "Apply given signal to fsm, executes fx effects and returns possibly updated fsm.
-   In addition to stateless FSM described above, the given `fsm` must contain:
-     `:allow?`     A function to check guards. Must be a fn accepting two arguments, 
-                   first is the fsm, second the guard data from the fsm. The function 
-                   must return truthy if the guard data allows transition.
-     `:handle-fx`  A function to execute effects. Must be a fn accepting two arguments,
-                   first is the fsm and the second is the fx data from the fsm. The 
-                   function must return possibly updated fsm."
-  [fsm signal] 
-  (let [transition-info (get-transition! (-> fsm :allow?) fsm signal) 
-        prev-states     (-> fsm :state (coerce-seq)) 
-        next-states     (let [to (-> transition-info :transition :to (coerce-seq))]
-                          (cond
-                            (nil? to) prev-states
-                            (= (first to) ::pop) (concat (pop-state! prev-states)
-                                                         (next to))
-                            :else (concat to (next prev-states)))) 
-        prev-state      (first prev-states) 
-        next-state      (first next-states) 
-        _               (when-not (contains? (-> fsm :states) next-state)
-                          (throw (ex-info (sprintf "fsm: error: transitioning to unknown state: %s" next-state)
-                                          {:fsm        fsm
-                                           :signal     signal
-                                           :state      prev-state
-                                           :next-state next-state})))
-        handle-fx       (-> fsm :handle-fx)
-        fxs             (-> transition-info :fx)] 
-    (-> (reduce handle-fx
-                (assoc fsm
-                       :state next-states
-                       :signal signal 
-                       :prev-state prev-state
-                       :next-state next-state)
-                fxs)
-        (assoc :state next-states)
-        (dissoc :signal :prev-state :next-state))))
+  "Apply given signal to fsm, executes fx effects and returns possibly updated fsm."
+  ([fsm signal] (apply-signal default-opts fsm signal))
+  ([{:as opts :keys [allow? handle-fx]} fsm signal] 
+   (let [transition-info (get-transition! allow? fsm signal) 
+         prev-states     (-> fsm :state (coerce-seq)) 
+         next-states     (let [to (-> transition-info :transition :to (coerce-seq))]
+                           (cond
+                             (nil? to) prev-states
+                             (= (first to) ::pop) (concat (pop-state! prev-states)
+                                                          (next to))
+                             :else (concat to (next prev-states)))) 
+         prev-state      (first prev-states) 
+         next-state      (first next-states) 
+         _               (when-not (contains? (-> fsm :states) next-state)
+                           (throw (ex-info (sprintf "fsm: error: transitioning to unknown state: %s" next-state)
+                                           {:fsm        fsm
+                                            :signal     signal
+                                            :state      prev-state
+                                            :next-state next-state}))) 
+         fxs             (-> transition-info :fx)
+         fsm'            (-> (reduce handle-fx
+                                     (assoc fsm
+                                            :state next-states
+                                            :signal signal
+                                            :prev-state prev-state
+                                            :next-state next-state)
+                                     fxs)
+                             (assoc :state next-states)
+                             (dissoc :signal :prev-state :next-state))] 
+     (if-let [pushback (seq (::pushback fsm'))]
+         (recur opts
+                (assoc fsm' ::pushback (next pushback))
+                (first pushback))
+         (dissoc fsm' ::pushback)))))
 
 
 (defn machine [fsm]

@@ -260,3 +260,22 @@
                   (reduce fsm/apply-signal fsm ["x" "x"])))
     (is (matches? (ex-info "fsm: error: transition using pop state, but stack is empty" {})
                   (reduce fsm/apply-signal fsm ["x" "x" "x"])))))
+
+
+(deftest pushback-test
+  (let [fsm {:state  :init
+             :states {:init {:on ["x" {:to :next
+                                       :fx [fsm/pushback]}]}
+                      :next {:on ["x" {:to :end}]}
+                      :end  {}}}]
+    (is (matches? {:state [:end]}
+                  (fsm/apply-signal fsm "x"))))
+  (let [fsm {:state  :init
+             :states {:init  {:on ["x" {:to :next1
+                                        :fx [[fsm/pushback "a" ::fsm/signal "b"]]}]}
+                      :next1 {:on ["a" {:to :next2}]}
+                      :next2 {:on ["x" {:to :next3}]}
+                      :next3 {:on ["b" {:to :end}]}
+                      :end   {}}}]
+    (is (matches? {:state [:end]}
+                  (fsm/apply-signal fsm "x")))))
