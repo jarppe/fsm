@@ -91,13 +91,13 @@
 
 
 (defn guards-for-transition
-  "Return all guards for given transition"
+  "Returns all guards for a given transition"
   [fsm transition]
   (transition-elements fsm transition :guards))
 
 
 (defn fx-for-transition
-  "Return all guards for given transition"
+  "Returns all effects for a given transition"
   [fsm transition]
   (transition-elements fsm transition :fx))
 
