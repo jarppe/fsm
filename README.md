@@ -130,3 +130,7 @@ handlers have put in it.
 ## Extendable
 
 ...todo...
+
+## LICENSE
+
+This work is copyright (c) Jarppe 2022-2023 and is licensed under [CC0](http://creativecommons.org/publicdomain/zero/1.0/.)
